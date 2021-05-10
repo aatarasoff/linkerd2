@@ -466,6 +466,150 @@ func TestTrafficSplitCliWithSP(t *testing.T) {
 	})
 }
 
+func TestTrafficSplitCliWithSPthroughTS(t *testing.T) {
+
+	out, err := TestHelper.LinkerdRun("smi", "install")
+	if err != nil {
+		testutil.AnnotatedFatal(t, "'linkerd smi install' command failed", err)
+	}
+
+	out, err = TestHelper.KubectlApply(out, "")
+	if err != nil {
+		testutil.AnnotatedFatalf(t, "'kubectl apply' command failed",
+			"'kubectl apply' command failed\n%s", out)
+	}
+
+	version := "v1alpha1-with-smi-adaptor"
+	ctx := context.Background()
+	TestHelper.WithDataPlaneNamespace(ctx, fmt.Sprintf("trafficsplit-test-%s", version), map[string]string{}, t, func(t *testing.T, prefixedNs string) {
+		out, err := TestHelper.LinkerdRun("inject", "--manual", "testdata/application.yaml")
+		if err != nil {
+			testutil.AnnotatedFatal(t, "'linkerd inject' command failed", err)
+		}
+
+		out, err = TestHelper.KubectlApply(out, prefixedNs)
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "'kubectl apply' command failed",
+				"'kubectl apply' command failed\n%s", out)
+		}
+
+		TsResourceFile := fmt.Sprintf("testdata/%s/traffic-split-leaf-weights.yaml", version)
+		TsResource, err := testutil.ReadFile(TsResourceFile)
+
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "cannot read updated traffic split resource",
+				"cannot read updated traffic split resource: %s, %s", TsResource, err)
+		}
+
+		out, err = TestHelper.KubectlApply(TsResource, prefixedNs)
+		if err != nil {
+			testutil.AnnotatedFatalf(t, "failed to update traffic split resource",
+				"failed to update traffic split resource: %s\n %s", err, out)
+		}
+
+		// wait for deployments to start
+		for _, deploy := range []string{"backend", "failing", "slow-cooker"} {
+			if err := TestHelper.CheckPods(ctx, prefixedNs, deploy, 1); err != nil {
+				if rce, ok := err.(*testutil.RestartCountError); ok {
+					testutil.AnnotatedWarn(t, "CheckPods timed-out", rce)
+				} else {
+					testutil.AnnotatedError(t, "CheckPods timed-out", err)
+				}
+			}
+		}
+
+		t.Run(fmt.Sprintf("ensure traffic is sent to one backend only for %s", version), func(t *testing.T) {
+			timeout := 40 * time.Second
+			err := TestHelper.RetryFor(timeout, func() error {
+				out, err := TestHelper.LinkerdRun("viz", "stat", "deploy", "--namespace", prefixedNs, "--from", "deploy/slow-cooker", "-t", "30s")
+				if err != nil {
+					return err
+				}
+
+				rows, err := parseStatRows(out, 1, 8)
+				if err != nil {
+					return err
+				}
+
+				expectedRows := []*testutil.RowStat{
+					{
+						Name:               "backend",
+						Meshed:             "1/1",
+						Success:            "100.00%",
+						TCPOpenConnections: "1",
+					},
+				}
+
+				if err := validateRowStats(expectedRows, rows); err != nil {
+					return err
+				}
+				return nil
+			})
+
+			if err != nil {
+				testutil.AnnotatedFatal(t, fmt.Sprintf("timed-out ensuring traffic is sent to one backend only (%s)", timeout), err)
+			}
+		})
+
+		t.Run(fmt.Sprintf("update traffic split resource with equal weights for %s", version), func(t *testing.T) {
+
+			updatedTsResourceFile := fmt.Sprintf("testdata/%s/updated-traffic-split-leaf-weights.yaml", version)
+			updatedTsResource, err := testutil.ReadFile(updatedTsResourceFile)
+
+			if err != nil {
+				testutil.AnnotatedFatalf(t, "cannot read updated traffic split resource",
+					"cannot read updated traffic split resource: %s, %s", updatedTsResource, err)
+			}
+
+			out, err := TestHelper.KubectlApply(updatedTsResource, prefixedNs)
+			if err != nil {
+				testutil.AnnotatedFatalf(t, "failed to update traffic split resource",
+					"failed to update traffic split resource: %s\n %s", err, out)
+			}
+		})
+
+		t.Run(fmt.Sprintf("ensure traffic is sent to both backends for %s", version), func(t *testing.T) {
+			timeout := 40 * time.Second
+			err := TestHelper.RetryFor(timeout, func() error {
+
+				out, err := TestHelper.LinkerdRun("viz", "stat", "deploy", "-n", prefixedNs, "--from", "deploy/slow-cooker", "-t", "30s")
+				if err != nil {
+					return err
+				}
+
+				rows, err := parseStatRows(out, 2, 8)
+				if err != nil {
+					return err
+				}
+
+				expectedRows := []*testutil.RowStat{
+					{
+						Name:               "backend",
+						Meshed:             "1/1",
+						Success:            "100.00%",
+						TCPOpenConnections: "1",
+					},
+					{
+						Name:               "failing",
+						Meshed:             "1/1",
+						Success:            "0.00%",
+						TCPOpenConnections: "1",
+					},
+				}
+
+				if err := validateRowStats(expectedRows, rows); err != nil {
+					return err
+				}
+				return nil
+			})
+
+			if err != nil {
+				testutil.AnnotatedFatal(t, fmt.Sprintf("timed-out ensuring traffic is sent to both backends (%s)", timeout), err)
+			}
+		})
+	})
+}
+
 func validateRowStats(expectedRowStats, actualRowStats []*testutil.RowStat) error {
 
 	if len(expectedRowStats) != len(actualRowStats) {
