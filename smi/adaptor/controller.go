@@ -221,7 +221,20 @@ func (c *SMIController) syncHandler(key string) error {
 			return err
 		}
 	} else {
+		log.Infof("Service Profile already present")
 		sp = serviceProfiles[0]
+
+		// Check if SP Matches the TS, and update if it not
+		spFromTs := c.toServiceProfile(ts)
+		if !equal(spFromTs, sp) {
+			log.Infof("serviceprofile/%s does not match trafficscplit/%s", sp.Name, ts.Name)
+			updateServiceProfile(sp, ts, c.clusterDomain)
+			log.Infof("Updated Service Profile as it's not equivalent to the relevant TS")
+			_, err = c.spclientset.LinkerdV1alpha2().ServiceProfiles(ts.Namespace).Update(context.Background(), sp, metav1.UpdateOptions{})
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	// If the Serviceprofile is not controlled by this Ts resource, we should log
@@ -230,9 +243,35 @@ func (c *SMIController) syncHandler(key string) error {
 		return fmt.Errorf("sp resource %s already exists but not controller by the adaptor", sp.Name)
 	}
 
-	// Check if SP Matches the TS, and update if it not ???
-
 	return nil
+}
+
+func equal(spA *serviceprofile.ServiceProfile, spB *serviceprofile.ServiceProfile) bool {
+	if spA.Name != spB.Name {
+		return false
+	}
+
+	if spA.Namespace != spB.Namespace {
+		return false
+	}
+
+	if len(spA.Spec.DstOverrides) != len(spB.Spec.DstOverrides) {
+		return false
+	}
+
+	for index, dstA := range spA.Spec.DstOverrides {
+		dstB := spB.Spec.DstOverrides[index]
+
+		if dstA.Authority != dstB.Authority {
+			return false
+		}
+
+		if !dstA.Weight.Equal(dstB.Weight) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // enqueueTs takes a Ts resource and converts it into a namespace/name
@@ -248,6 +287,22 @@ func (c *SMIController) enqueueTs(obj interface{}) {
 	c.workqueue.Add(key)
 }
 
+func updateServiceProfile(sp *serviceprofile.ServiceProfile, ts *trafficsplit.TrafficSplit, clusterDomain string) {
+	sp.Name = fmt.Sprintf("%s.%s.svc.%s", ts.Spec.Service, ts.Namespace, clusterDomain)
+	sp.Namespace = ts.Namespace
+
+	// TODO: What happens when there are weightedDsts added by the user?
+	sp.Spec.DstOverrides = []*serviceprofile.WeightedDst{}
+	for _, backend := range ts.Spec.Backends {
+		weightedDst := &serviceprofile.WeightedDst{
+			Authority: fmt.Sprintf("%s.%s.svc.%s", backend.Service, ts.Namespace, clusterDomain),
+			Weight:    *backend.Weight,
+		}
+		sp.Spec.DstOverrides = append(sp.Spec.DstOverrides, weightedDst)
+	}
+
+}
+
 func (c *SMIController) toServiceProfile(ts *trafficsplit.TrafficSplit) *serviceprofile.ServiceProfile {
 	spResource := serviceprofile.ServiceProfile{
 		ObjectMeta: metav1.ObjectMeta{
@@ -257,7 +312,7 @@ func (c *SMIController) toServiceProfile(ts *trafficsplit.TrafficSplit) *service
 				"created-by": agent,
 				"parent-ts":  ts.Name,
 			},
-			// Add More Metadata ???
+			// TODO: Add More Metadata
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(ts, trafficsplit.SchemeGroupVersion.WithKind("TrafficSplit")),
 			},
