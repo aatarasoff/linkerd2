@@ -13,7 +13,10 @@ import (
 
 var TestHelper *testutil.TestHelper
 
-const zeroRPS = "0.0rps"
+const (
+	zeroRPS                 = "0.0rps"
+	expectedStatColumnCount = 8
+)
 
 func TestMain(m *testing.M) {
 	TestHelper = testutil.NewTestHelper()
@@ -67,7 +70,7 @@ func parseStatTsRow(out string, expectedRowCount, expectedColumnCount int) (map[
 	return statRows, nil
 }
 
-func parseStatRows(out string, expectedRowCount, expectedColumnCount int) ([]*testutil.RowStat, error) {
+func parseStatRows(out string, expectedRowCount int) ([]*testutil.RowStat, error) {
 	rows, err := testutil.CheckRowCount(out, expectedRowCount)
 	if err != nil {
 		return nil, err
@@ -78,10 +81,10 @@ func parseStatRows(out string, expectedRowCount, expectedColumnCount int) ([]*te
 	for _, row := range rows {
 		fields := strings.Fields(row)
 
-		if len(fields) != expectedColumnCount {
+		if len(fields) != expectedStatColumnCount {
 			return nil, fmt.Errorf(
 				"Expected [%d] columns in stat output, got [%d]; full output:\n%s",
-				expectedColumnCount, len(fields), row)
+				expectedStatColumnCount, len(fields), row)
 		}
 
 		row := &testutil.RowStat{
@@ -382,7 +385,7 @@ func TestTrafficSplitCliWithSP(t *testing.T) {
 					return err
 				}
 
-				rows, err := parseStatRows(out, 1, 8)
+				rows, err := parseStatRows(out, 1)
 				if err != nil {
 					return err
 				}
@@ -433,7 +436,7 @@ func TestTrafficSplitCliWithSP(t *testing.T) {
 					return err
 				}
 
-				rows, err := parseStatRows(out, 2, 8)
+				rows, err := parseStatRows(out, 2)
 				if err != nil {
 					return err
 				}
@@ -526,7 +529,7 @@ func TestTrafficSplitCliWithSPthroughTS(t *testing.T) {
 					return err
 				}
 
-				rows, err := parseStatRows(out, 1, 8)
+				rows, err := parseStatRows(out, 1)
 				if err != nil {
 					return err
 				}
@@ -577,7 +580,7 @@ func TestTrafficSplitCliWithSPthroughTS(t *testing.T) {
 					return err
 				}
 
-				rows, err := parseStatRows(out, 2, 8)
+				rows, err := parseStatRows(out, 2)
 				if err != nil {
 					return err
 				}
